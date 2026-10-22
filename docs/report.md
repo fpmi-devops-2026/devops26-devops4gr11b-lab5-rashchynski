@@ -235,16 +235,541 @@ a830138849c5f88afd63f2ab02054836d8a19b848ca29aaef4a61b187916262b
 
 ## 4. Задание 2. Управление конфигурацией серверов с помощью Ansible
 
-_(раздел будет добавлен после выполнения задания 2)_
+Изучены статьи How To Set Up Ansible Inventories, How To Manage Multiple Servers
+with Ansible Ad Hoc Commands, How To Write Ansible Playbooks, а также документация
+Using Ansible command line tools и Using Ansible playbooks.
+
+### 4.1. Целевые хосты
+
+В варианте 2 (kind) виртуальных машин нет: ноды Kubernetes — это Docker-контейнеры.
+Целевым кластером выбран кластер `lab4` из предыдущей лабораторной работы
+(1 control-plane + 2 worker). Ansible подключается к контейнерам через
+connection-плагин `community.docker.docker`:
+
+```yaml
+all:
+  vars:
+    ansible_connection: community.docker.docker
+    ansible_python_interpreter: /usr/bin/python3
+  children:
+    control_plane:
+      hosts:
+        lab4-control-plane:
+    workers:
+      hosts:
+        lab4-worker:
+        lab4-worker2:
+    k8s_cluster:
+      children:
+        control_plane:
+        workers:
+```
+
+Образ `kindest/node` не содержит Python, поэтому на ноды предварительно
+установлен `python3` модулем `raw`:
+
+```bash
+$ ansible all -m raw -a "apt-get update -qq && apt-get install -y -qq python3"
+```
+
+### 4.2. Проверка инвентаря
+
+```bash
+$ ansible-inventory --graph
+@all:
+  |--@k8s_cluster:
+  |  |--@control_plane:
+  |  |  |--lab4-control-plane
+  |  |--@workers:
+  |  |  |--lab4-worker
+  |  |  |--lab4-worker2
+```
+
+### 4.3. Ad-hoc команды
+
+Ping группы узлов одной командой:
+
+```bash
+$ ansible k8s_cluster -m ping
+lab4-worker | SUCCESS => {"changed": false, "ping": "pong"}
+lab4-control-plane | SUCCESS => {"changed": false, "ping": "pong"}
+lab4-worker2 | SUCCESS => {"changed": false, "ping": "pong"}
+```
+
+Установка пакета `zsh`:
+
+```bash
+$ ansible workers -m apt -a "name=zsh state=present update_cache=yes"
+lab4-worker  | changed=true  ... Setting up zsh (5.9-8+b24) ...
+lab4-worker2 | changed=true  ... Setting up zsh (5.9-8+b24) ...
+
+$ ansible workers -m shell -a "zsh --version"
+lab4-worker  | zsh 5.9 (aarch64-unknown-linux-gnu)
+lab4-worker2 | zsh 5.9 (aarch64-unknown-linux-gnu)
+```
+
+Перезапуск службы:
+
+```bash
+$ ansible workers -m service -a "name=nginx state=restarted"
+```
+
+### 4.4. Playbook'и
+
+`playbooks/ping.yml` — ping и вывод фактов о хостах:
+
+```yaml
+- name: Ping all nodes of the Kubernetes cluster
+  hosts: k8s_cluster
+  gather_facts: true
+  tasks:
+    - name: Ping host
+      ansible.builtin.ping:
+    - name: Show host information
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+          ({{ ansible_facts['architecture'] }}),
+          CPU {{ ansible_facts['processor_vcpus'] }},
+          RAM {{ ansible_facts['memtotal_mb'] }} MB
+```
+
+Результат:
+
+```text
+ok: [lab4-control-plane] => "lab4-control-plane: Debian 13.6 (aarch64), CPU 10, RAM 7934 MB"
+ok: [lab4-worker]        => "lab4-worker: Debian 13.6 (aarch64), CPU 10, RAM 7934 MB"
+ok: [lab4-worker2]       => "lab4-worker2: Debian 13.6 (aarch64), CPU 10, RAM 7934 MB"
+```
+
+`playbooks/system-info.yml` — пример из документации (память и CPU через
+`ansible_facts`).
+
+`playbooks/nginx.yml` — playbook с ролью `nginx`. Роль состоит из задач,
+обработчика и шаблона:
+
+```yaml
+# roles/nginx/tasks/main.yml
+- name: Ensure nginx is installed
+  ansible.builtin.apt:
+    name: "{{ nginx_package }}"
+    state: present
+    update_cache: true
+
+- name: Deploy the index page from a template
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: "{{ nginx_document_root }}/index.html"
+    mode: "0644"
+  notify: Restart nginx
+
+- name: Ensure nginx is running and enabled
+  ansible.builtin.service:
+    name: "{{ nginx_package }}"
+    state: started
+    enabled: true
+```
+
+Запуск:
+
+```bash
+$ ansible-playbook playbooks/nginx.yml
+TASK [nginx : Deploy the index page from a template] ***
+changed: [lab4-worker]
+changed: [lab4-worker2]
+RUNNING HANDLER [nginx : Restart nginx] ***
+changed: [lab4-worker]
+changed: [lab4-worker2]
+PLAY RECAP
+lab4-worker  : ok=6 changed=2 failed=0
+lab4-worker2 : ok=6 changed=2 failed=0
+```
+
+Повторный запуск показывает идемпотентность — `changed=0`.
+
+Проверка страницы на нодах:
+
+```bash
+$ ansible workers -m uri -a "url=http://localhost/ return_content=yes"
+lab4-worker | SUCCESS => "content": "...<h1>Ansible + kind</h1>...<p>Хост: lab4-worker</p>..."
+```
+
+Логи выполнения: [`task2/ansible/logs/`](../task2/ansible/logs/).
+
+### 4.5. Вывод по заданию 2
+
+Освоены inventory и группы хостов, ad-hoc команды (ping, установка пакета,
+перезапуск службы), написан и выполнен playbook с ролью, обработчиком и
+шаблоном. Конфигурации опубликованы в каталоге [`task2/`](../task2/).
 
 ---
 
 ## 5. Задание 3. Создание кластера с помощью Terraform и Ansible локально
 
-_(раздел будет добавлен после выполнения задания 3)_
+### 5.1. Вариант и инструменты
+
+Выбран **вариант 2** — kind (Kubernetes in Docker). Хост работает на Apple
+Silicon, поэтому вариант 1 (VirtualBox, Libvirt/KVM) недоступен. Обязательное
+условие — Terraform, Ansible, Kubernetes и Docker — выполнено.
+
+| Инструмент | Версия | Роль |
+|------------|--------|------|
+| Terraform | 1.16.5 | создание кластера kind |
+| kind | v0.33.0 | ноды кластера как Docker-контейнеры |
+| Ansible | 14.5 | развёртывание приложения |
+| Kubernetes | v1.37.0 | оркестрация |
+| Docker | 29.8.0 | контейнеры нод и образы приложений |
+
+### 5.2. Создание кластера Terraform
+
+Terraform формирует конфигурацию кластера и вызывает kind CLI через
+`terraform_data` (провайдер `tehcyx/kind` в текущей версии падал на
+`kubeadm init`, поэтому используется официальный CLI):
+
+```hcl
+locals {
+  kind_config = {
+    kind       = "Cluster"
+    apiVersion = "kind.x-k8s.io/v1alpha4"
+    nodes = [
+      {
+        role = "control-plane"
+        extraPortMappings = [
+          { containerPort = 30080, hostPort = 30080, protocol = "TCP" }
+        ]
+      },
+      { role = "worker" },
+      { role = "worker" },
+    ]
+  }
+}
+
+resource "local_file" "kind_config" {
+  content  = yamlencode(local.kind_config)
+  filename = "${path.module}/kind-config.yaml"
+}
+
+resource "terraform_data" "cluster" {
+  triggers_replace = var.cluster_name
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      kind create cluster --name "${self.triggers_replace}" \
+        --config "${local_file.kind_config.filename}"
+      kind export kubeconfig --name "${self.triggers_replace}" \
+        --kubeconfig "${path.module}/kubeconfig"
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "kind delete cluster --name ${self.triggers_replace}"
+  }
+}
+```
+
+```bash
+$ terraform apply -auto-approve
+terraform_data.cluster: Creation complete after 16s
+Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
+
+$ kubectl --kubeconfig kubeconfig get nodes
+NAME                 STATUS   ROLES           AGE   VERSION
+lab5-control-plane   Ready    control-plane   25s   v1.37.0
+lab5-worker          Ready    <none>          15s   v1.37.0
+lab5-worker2         Ready    <none>          16s   v1.37.0
+```
+
+### 5.3. Приложение и образы
+
+Разворачивается проект из задания 5 лабораторной работы №1: FastAPI +
+PostgreSQL + миграции Liquibase. Перед приложением стоит nginx (задание 4
+лабораторной №1). Исходники — в [`task3/app/`](../task3/app/).
+
+| Образ | Назначение |
+|-------|------------|
+| `nrashchynski/lab5-students-app:v1` | FastAPI-приложение |
+| `nrashchynski/lab5-liquibase:v1` | Liquibase + JDBC-драйвер PostgreSQL |
+
+Драйвер PostgreSQL добавлен в образ Liquibase при сборке: переменная
+`INSTALL_POSTGRESQL_DRIVER` в актуальной версии образа драйвер не устанавливает,
+а JAR дополнительно получает права `644` (контейнер работает под пользователем
+`liquibase`).
+
+### 5.4. Развёртывание через Ansible
+
+Playbook [`task3/ansible/playbooks/deploy-app.yml`](../task3/ansible/playbooks/deploy-app.yml)
+помечает ноды и применяет манифесты:
+
+```yaml
+- name: Label the worker node for the web server and application
+  ansible.builtin.command:
+    cmd: "kubectl --kubeconfig {{ kubeconfig }} label node lab5-worker node-role=web --overwrite"
+
+- name: Label the worker node for the database
+  ansible.builtin.command:
+    cmd: "kubectl --kubeconfig {{ kubeconfig }} label node lab5-worker2 node-role=db --overwrite"
+
+# ... применение 00-namespace ... 07-nginx и ожидание готовности
+```
+
+```bash
+$ ansible-playbook playbooks/deploy-app.yml
+PLAY RECAP
+localhost : ok=15 changed=13 failed=0
+```
+
+### 5.5. Размещение сервисов по нодам
+
+| Компонент | Нода | Как задано |
+|-----------|------|------------|
+| nginx | `lab5-worker` | `nodeSelector: node-role=web` |
+| app (FastAPI) | `lab5-worker` | `nodeSelector: node-role=web` |
+| db (PostgreSQL) | `lab5-worker2` | `nodeSelector: node-role=db` |
+| liquibase (Job) | `lab5-worker` | планировщик |
+
+```text
+NAME                     READY   STATUS      NODE
+app-7786797db4-8rbhz     1/1     Running     lab5-worker
+db-69f6448f99-wbchw      1/1     Running     lab5-worker2
+liquibase-ngdfd          0/1     Completed   lab5-worker
+nginx-789dc46fc6-7sl98   1/1     Running     lab5-worker
+```
+
+Веб-сервер и приложение размещены на одной ноде, база данных — на другой,
+как требует задание.
+
+### 5.6. Манифесты
+
+- `00-namespace.yaml` — namespace `lab5`;
+- `01-secret.yaml` — параметры PostgreSQL и `DATABASE_URL`
+  (`postgresql+psycopg2://...`, явный драйвер обязателен для SQLAlchemy 2.1+);
+- `02-configmap-liquibase.yaml` — changelog Liquibase;
+- `03-postgres.yaml` — PVC 1Gi, Deployment и Service `db`;
+- `04-liquibase-job.yaml` — Job миграций с init-контейнером ожидания БД;
+- `05-app.yaml` — Deployment и Service `app`;
+- `06-nginx-configmap.yaml` — конфигурация reverse proxy;
+- `07-nginx.yaml` — Deployment и Service `nginx` типа NodePort (30080).
+
+### 5.7. Проверка
+
+```bash
+$ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:30080/docs
+200
+
+$ curl -s -X POST http://localhost:30080/students/enroll \
+    -H "Content-Type: application/json" \
+    -d '{"full_name":"Петров Пётр","specialty":"ИИ","status":"active"}'
+{"full_name":"Петров Пётр","specialty":"ИИ","id":2,"status":"enrolled"}
+
+$ curl -s http://localhost:30080/students
+[{"full_name":"Иванов Иван","specialty":"ПМ","id":1,"status":"enrolled"},
+ {"full_name":"Петров Пётр","specialty":"ИИ","id":2,"status":"enrolled"}]
+
+$ curl -s http://localhost:30080/reports/summary
+{"active_students_by_specialty":{"ИИ":1,"ПМ":1},"total_active_students":2,"total_expelled_students":0}
+```
+
+Логи: [`task3/logs/`](../task3/logs/).
+
+### 5.8. Вывод по заданию 3
+
+Кластер Kubernetes из трёх нод создан через Terraform (kind), приложение из
+лабораторной №1 развёрнуто через Ansible, сервисы разнесены по нодам согласно
+заданию, доступ проверен через NodePort.
 
 ---
 
 ## 6. Контрольные вопросы
 
-_(ответы будут добавлены в конце работы)_
+### 1. Для каких задач применяется Ansible?
+
+Ansible — система управления конфигурациями и автоматизации. Применяется для
+настройки серверов, установки и обновления ПО, развёртывания приложений,
+управления конфигурационными файлами, оркестрации многошаговых операций и
+подготовки инфраструктуры. Работает без агентов: подключается по SSH (или через
+другие connection-плагины) и выполняет задачи идемпотентно.
+
+### 2. Какие способы управления серверами применяются в Ansible?
+
+- **Ad-hoc команды** — разовые команды для быстрых операций (`ansible ... -m ...`).
+- **Playbook'и** — декларативные YAML-сценарии из задач, выполняемые
+  `ansible-playbook`.
+- **Роли** — переиспользуемые наборы задач, шаблонов, файлов и обработчиков.
+- **Inventory** — список хостов и групп, к которым применяются команды.
+- **Модули и плагины подключения** — SSH, local, Docker и другие способы доступа.
+
+### 3. Что входит в состав файла Ansible playbook?
+
+Playbook — YAML-файл со списком пьес (plays). Каждая пьеса содержит:
+
+- `hosts` — группу или хосты, к которым применяется пьеса;
+- `become` — повышение привилегий;
+- `vars` — переменные;
+- `gather_facts` — сбор фактов;
+- `roles` — список ролей;
+- `tasks` — список задач с модулями;
+- `handlers` — обработчики, вызываемые через `notify`.
+
+### 4. Что такое группы узлов (хостов) в Ansible?
+
+Группы — именованные объединения хостов в inventory (например, `workers`,
+`control_plane`). Позволяют применять команды и playbook'и сразу к набору
+хостов и использовать групповые переменные. Группы могут быть вложенными.
+
+### 5. Как одной командой выполнить ping группы узлов (хостов)?
+
+```bash
+ansible <группа> -m ping
+```
+
+Например, `ansible k8s_cluster -m ping` проверяет доступность всех хостов группы
+`k8s_cluster`.
+
+### 6. Что такое роль Ansible?
+
+Роль — структурированный переиспользуемый набор задач, переменных, шаблонов,
+файлов и обработчиков с фиксированной структурой каталогов (`tasks/`, `handlers/`,
+`templates/`, `files/`, `defaults/`, `vars/`, `meta/`). Роль подключается в
+playbook через `roles:` и позволяет переиспользовать логику между проектами.
+
+### 7. Что такое файл инвентаризации Ansible и как он используется?
+
+Inventory — файл (INI или YAML) со списком управляемых хостов, их групп и
+переменных (адрес, пользователь, способ подключения). Ansible читает его, чтобы
+определить, к каким хостам применять команды и playbook'и. Путь задаётся в
+`ansible.cfg` или флагом `-i`.
+
+### 8. Что такое специальная команда Ansible?
+
+Специальная (ad-hoc) команда — однократная команда Ansible без playbook'а:
+
+```bash
+ansible <группа> -m <модуль> -a "<аргументы>"
+```
+
+Используется для быстрых проверок и разовых операций, например
+`ansible all -m ping` или `ansible workers -m apt -a "name=zsh state=present"`.
+
+### 9. Как перезапустить службу с помощью Ansible?
+
+Модулем `service` (или `systemd_service`):
+
+```bash
+ansible workers -m service -a "name=nginx state=restarted"
+```
+
+В playbook:
+
+```yaml
+- name: Restart nginx
+  ansible.builtin.service:
+    name: nginx
+    state: restarted
+```
+
+### 10. Что такое Hashicorp Terraform?
+
+Terraform — инструмент Infrastructure as Code от HashiCorp. Позволяет описывать
+инфраструктуру декларативно в HCL-файлах, строить план изменений (`plan`) и
+применять его (`apply`), храня состояние ресурсов в state-файле. Поддерживает
+множество провайдеров (облака, гипервизоры, Docker, Kubernetes и др.).
+
+### 11. Что такое инфраструктура как код (Infrastructure as code — IaC)?
+
+IaC — подход, при котором инфраструктура описывается в виде кода и хранится в
+системе контроля версий. Это делает развёртывание воспроизводимым, проверяемым
+и автоматизируемым: один и тот же код создаёт одинаковую инфраструктуру в разных
+окружениях, а изменения проходят ревью и версионирование.
+
+### 12. Как установить Terraform?
+
+Скачать бинарник с официального сайта HashiCorp или установить пакетным
+менеджером. Например, на macOS:
+
+```bash
+brew install hashicorp/tap/terraform
+```
+
+Проверка:
+
+```bash
+terraform version
+```
+
+В данной работе CDN HashiCorp был недоступен, поэтому бинарник установлен с
+зеркала `hashicorp-releases.yandexcloud.net`.
+
+### 13. Что такое провайдер (поставщик) в Terraform?
+
+Провайдер — плагин, который реализует взаимодействие Terraform с конкретной
+платформой (AWS, Yandex Cloud, Docker, Kubernetes, kind и т. д.). Он описывает
+ресурсы и источники данных этой платформы. Провайдеры объявляются в блоке
+`required_providers` и загружаются командой `terraform init`.
+
+### 14. Объясните базовую структуру файла конфигурации Terraform.
+
+Базовая структура:
+
+```hcl
+terraform {
+  required_providers {
+    docker = {
+      source = "kreuzwerker/docker"
+    }
+  }
+}
+
+provider "docker" {}
+
+resource "docker_container" "nginx" {
+  image = "nginx:1.28"
+  name  = "tutorial"
+}
+```
+
+- блок `terraform` — версия Terraform и провайдеры;
+- блок `provider` — настройки провайдера;
+- блоки `resource` — описываемые ресурсы;
+- блоки `variable`, `output`, `locals` — переменные и выходные значения.
+
+### 15. Что такое файл состояния Terraform?
+
+State-файл (`terraform.tfstate`) — хранилище соответствия между ресурсами в
+конфигурации и реальными объектами инфраструктуры, а также их атрибутов.
+Terraform использует state, чтобы понимать, что уже создано, и вычислять план
+изменений. State может храниться локально или удалённо (backend).
+
+### 16. Для чего нужна terraform destroy команда?
+
+`terraform destroy` удаляет все ресурсы, описанные в конфигурации и
+зафиксированные в state. Она показывает план удаления и после подтверждения
+уничтожает инфраструктуру. Используется для очистки временных стендов и
+экономии ресурсов.
+
+### 17. Что такое состояние в terraform?
+
+Состояние (state) — снимок созданной инфраструктуры: список ресурсов, их
+идентификаторы и атрибуты. Оно позволяет Terraform сопоставлять конфигурацию с
+реальными объектами, обнаруживать расхождения и выполнять инкрементальные
+изменения. Состояние может содержать чувствительные данные, поэтому его
+защищают и хранят удалённо при командной работе.
+
+### 18. Как определить зависимости в Terraform?
+
+Зависимости бывают явными и неявными:
+
+- **Неявные** — через ссылки на атрибуты других ресурсов, например
+  `image = docker_image.nginx.image_id`;
+- **Явные** — метааргумент `depends_on`:
+
+```hcl
+resource "docker_container" "nginx" {
+  image = docker_image.nginx.image_id
+  name  = "tutorial"
+  depends_on = [docker_image.nginx]
+}
+```
+
+Terraform строит граф зависимостей и выполняет операции в правильном порядке.
